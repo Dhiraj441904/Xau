@@ -82,6 +82,9 @@ E.push({s:'XAU-M',y:'XAUUSD=X',n:'GOLD MICRO · M1',cat:'micro',v:100,d:2,iv:'1m
 E.push({s:'BTC-M',y:'BTC-USD',n:'BTC MICRO · M1',cat:'micro',v:1,d:1,iv:'1m',
  ...CLS.micro,bars:[],plan:null,dir:0,last:null,on:true});
 
+const KMAP={XAUUSD:'PAXGUSD',BTCUSD:'XBTUSD',ETHUSD:'ETHUSD','XAU-M':'PAXGUSD','BTC-M':'XBTUSD'};
+E.forEach(e=>{if(KMAP[e.s])e.k=KMAP[e.s]});
+
 const fl=$('fl');
 ['ALL','micro','metal','fx','crypto','oil'].forEach((k,i)=>{
  const b=document.createElement('button');b.textContent=k==='ALL'?'ALL':k.toUpperCase();
@@ -103,17 +106,24 @@ const atr=(h,l,c,p)=>{const t=h.map((_,i)=>i?Math.max(h[i]-l[i],Math.abs(h[i]-c[
 function adx(h,l,c,p){const pd=[0],nd=[0];for(let i=1;i<h.length;i++){const u=h[i]-h[i-1],d=l[i-1]-l[i];pd.push(u>d&&u>0?u:0);nd.push(d>u&&d>0?d:0)}const a=atr(h,l,c,p),sp=[0],sn=[0];for(let i=1;i<a.length;i++){sp.push((sp[i-1]*(p-1)+pd[i])/p);sn.push((sn[i-1]*(p-1)+nd[i])/p)}const dx=a.map((v,i)=>Math.abs(sp[i]-sn[i])/(v||1e-9)*100);let o=[dx[0]];for(let i=1;i<dx.length;i++)o.push((o[i-1]*(p-1)+dx[i])/p);return o}
 
 async function pull(e){
- const u='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(e.y)+'?interval='+e.iv+'&range='+(e.iv==='1m'?'1d':'5d');
- const px=['https://api.allorigins.win/raw?url='+encodeURIComponent(u),
-           'https://corsproxy.io/?url='+encodeURIComponent(u)];
- for(const p of px){
-  try{const r=await fetch(p);const j=await r.json();
-   const res=j.chart&&j.chart.result&&j.chart.result[0];if(!res)continue;
-   const q=res.indicators.quote[0],ts=res.timestamp;if(!ts)continue;
-   const b=[];for(let i=0;i<ts.length;i++){if(q.close[i]==null)continue;
+ const tries=[];
+ if(e.k)tries.push(['kraken',async()=>{
+  const r=await fetch('https://api.kraken.com/0/public/OHLC?pair='+e.k+'&interval='+(e.iv==='1m'?1:15));
+  const j=await r.json();const key=Object.keys(j.result)[0];
+  return j.result[key].map(x=>({t:x[0]*1000,o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[6]}))}]);
+ const y='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(e.y)+
+  '?interval='+e.iv+'&range='+(e.iv==='1m'?'1d':'5d')+'&_='+Date.now();
+ for(const pr of ['https://api.codetabs.com/v1/proxy?quest=',
+                  'https://api.allorigins.win/raw?url='])
+  tries.push(['proxy',async()=>{
+   const r=await fetch(pr+encodeURIComponent(y));const j=await r.json();
+   const res=j.chart&&j.chart.result&&j.chart.result[0];if(!res)throw new Error('bad');
+   const q=res.indicators.quote[0],ts=res.timestamp,b=[];
+   for(let i=0;i<ts.length;i++){if(q.close[i]==null)continue;
     b.push({t:ts[i]*1000,o:q.open[i],h:q.high[i],l:q.low[i],c:q.close[i],v:q.volume[i]||0})}
-   if(b.length>60)return b}catch(x){}
- }
+   return b}]);
+ for(const[n,f]of tries){
+  try{const b=await f();if(b&&b.length>60)return b}catch(x){}}
  throw new Error('no data')}
 
 function hourly(b){const m=new Map();for(const x of b)m.set(Math.floor(x.t/36e5),x.c);return[...m.values()]}
@@ -201,4 +211,6 @@ $('go').onclick=()=>{
  localStorage.setItem('mad',JSON.stringify(cfg));
  running=true;$('go').textContent='STOP';
  E.forEach((e,i)=>setTimeout(()=>{tick(e);T.push(setInterval(()=>tick(e),e.iv==='1m'?10000:30000))},i*2500))};
+
+window.E=E;window.pull=pull;
 </script></body></html>
