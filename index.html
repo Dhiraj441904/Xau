@@ -49,7 +49,7 @@ input{width:100%;background:#0a0a0d;border:1px solid var(--ln);color:var(--tx);b
 <script>
 const $=i=>document.getElementById(i);
 const cfg={eq:10000,risk:0.5,tok:'',chat:''};
-let running=false,logs=[];
+let running=false,logs=[],livePx={};
 try{Object.assign(cfg,JSON.parse(localStorage.getItem('mad')||'{}'))}catch(e){}
 $('cfEq').value=cfg.eq;$('cfRisk').value=cfg.risk;$('cfTok').value=cfg.tok;$('cfChat').value=cfg.chat;
 const log=m=>{logs.unshift(new Date().toLocaleTimeString()+' '+m);logs=logs.slice(0,30);$('log').textContent=logs.join('\n')};
@@ -83,7 +83,8 @@ E.push({s:'BTC-M',y:'BTC-USD',n:'BTC MICRO · M1',cat:'micro',v:1,d:1,iv:'1m',
  ...CLS.micro,bars:[],plan:null,dir:0,last:null,on:true});
 
 const KMAP={XAUUSD:'PAXGUSD',BTCUSD:'XBTUSD',ETHUSD:'ETHUSD','XAU-M':'PAXGUSD','BTC-M':'XBTUSD'};
-E.forEach(e=>{if(KMAP[e.s])e.k=KMAP[e.s]});
+const BMAP={EURUSD:'EURUSDT',GBPUSD:'GBPUSDT',AUDUSD:'AUDUSDT'};
+E.forEach(e=>{if(KMAP[e.s])e.k=KMAP[e.s];if(BMAP[e.s])e.b=BMAP[e.s]});
 
 const fl=$('fl');
 ['ALL','micro','metal','fx','crypto','oil'].forEach((k,i)=>{
@@ -111,10 +112,16 @@ async function pull(e){
   const r=await fetch('https://api.kraken.com/0/public/OHLC?pair='+e.k+'&interval='+(e.iv==='1m'?1:15));
   const j=await r.json();const key=Object.keys(j.result)[0];
   return j.result[key].map(x=>({t:x[0]*1000,o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[6]}))}]);
+ if(e.b)tries.push(['binance',async()=>{
+  const r=await fetch('https://api.binance.com/api/v3/klines?symbol='+e.b+'&interval='+(e.iv==='1m'?'1m':'15m')+'&limit=300');
+  const j=await r.json();
+  return j.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4],v:+x[5]}))}]);
  const y='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(e.y)+
   '?interval='+e.iv+'&range='+(e.iv==='1m'?'1d':'5d')+'&_='+Date.now();
  for(const pr of ['https://api.codetabs.com/v1/proxy?quest=',
-                  'https://api.allorigins.win/raw?url='])
+                  'https://api.cors.lol/?url=',
+                  'https://api.allorigins.win/raw?url=',
+                  'https://cors.eu.org/'])
   tries.push(['proxy',async()=>{
    const r=await fetch(pr+encodeURIComponent(y));const j=await r.json();
    const res=j.chart&&j.chart.result&&j.chart.result[0];if(!res)throw new Error('bad');
@@ -125,6 +132,24 @@ async function pull(e){
  for(const[n,f]of tries){
   try{const b=await f();if(b&&b.length>60)return b}catch(x){}}
  throw new Error('no data')}
+
+function paintPx(e,p){
+ const el=$('x_'+e.s);if(!el)return;
+ const prev=+el.dataset.p||p;
+ el.textContent=p.toFixed(e.d);
+ el.className='px '+(p>=prev?'up':'dn');
+ el.dataset.p=p;
+ el.style.transition='none';
+ setTimeout(()=>{el.style.transition='color .4s'},20)}
+
+async function pollPx(e){
+ if(!running||!e.k)return;
+ try{
+  const r=await fetch('https://api.kraken.com/0/public/Ticker?pair='+e.k);
+  const j=await r.json();const key=Object.keys(j.result)[0];const t=j.result[key];
+  const p=(+t.b[0]+ +t.a[0])/2;
+  livePx[e.s]=p;paintPx(e,p);
+ }catch(x){}}
 
 function hourly(b){const m=new Map();for(const x of b)m.set(Math.floor(x.t/36e5),x.c);return[...m.values()]}
 
@@ -154,8 +179,8 @@ function analyse(e){
   gate:((e.cat==='crypto'||e.s==='BTC-M')?atrOk:(dayOk&&atrOk)),sessOk,dayOk,atrOk}}
 
 function render(e,S){
- const el=$('x_'+e.s);const prev=el.dataset.p?+el.dataset.p:S.c;
- el.textContent=S.c.toFixed(e.d);el.className='px '+(S.c>=prev?'up':'dn');el.dataset.p=S.c;
+ if(livePx[e.s])S.c=livePx[e.s];
+ paintPx(e,S.c);
  const pts=e.bars.slice(-60).map(x=>x.c),mn=Math.min(...pts),mx=Math.max(...pts),rg=(mx-mn)||1;
  $('s_'+e.s).innerHTML='<polyline fill="none" stroke="'+(pts[pts.length-1]>=pts[0]?'#22c55e':'#ef4444')+
   '" stroke-width="1.3" points="'+pts.map((p,i)=>(i/59*300)+','+(44-(p-mn)/rg*40)).join(' ')+'"/>';
@@ -181,6 +206,7 @@ function render(e,S){
   '<div><label>RISK$</label><span>'+riskUsd.toFixed(2)+'</span></div>'}
 
 function fire(e,S){
+ if(livePx[e.s])S.c=livePx[e.s];
  const riskUsd=cfg.eq*cfg.risk/100,slD=S.A*e.sl;
  const lots=Math.max(0.01,Math.round(riskUsd/(slD*e.v)*100)/100);
  e.plan={dir:e.dir,entry:S.c,sl:e.dir>0?S.c-slD:S.c+slD,
@@ -210,7 +236,9 @@ $('go').onclick=()=>{
  cfg.tok=$('cfTok').value.trim();cfg.chat=$('cfChat').value.trim();
  localStorage.setItem('mad',JSON.stringify(cfg));
  running=true;$('go').textContent='STOP';
- E.forEach((e,i)=>setTimeout(()=>{tick(e);T.push(setInterval(()=>tick(e),e.iv==='1m'?10000:30000))},i*2500))};
+ E.forEach((e,i)=>{
+  if(e.k){pollPx(e);T.push(setInterval(()=>pollPx(e),2500))}
+  setTimeout(()=>{tick(e);T.push(setInterval(()=>tick(e),e.iv==='1m'?10000:30000))},i*2500)})};
 
 window.E=E;window.pull=pull;
 </script></body></html>
