@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XAU Signal Desk</title>
+<style>
+:root{--bg:#0d0d10;--pn:#16161b;--ln:#2a2a33;--tx:#e8e8ee;--mut:#8a8a99;
+--ok:#22c55e;--no:#ef4444;--wr:#f59e0b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);
+font:14px/1.45 -apple-system,system-ui,sans-serif;padding:12px 12px 40px}
+h1{font-size:15px;margin:0 0 10px;letter-spacing:.5px}
+h1 span{color:var(--mut);font-weight:400;font-size:11px}
+.card{background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:10px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;
+border-bottom:1px solid #202028;font-size:13px}
+.row:last-child{border:0}
+.row b{font-weight:600}
+.v{text-align:right}
+.ok{color:var(--ok)}.no{color:var(--no)}.mut{color:var(--mut)}.wr{color:var(--wr)}
+.verdict{font-size:20px;font-weight:700;letter-spacing:1px;text-align:center;padding:10px 0}
+.plan{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.plan div{background:#101015;border:1px solid var(--ln);border-radius:8px;padding:8px}
+.plan label{display:block;font-size:10px;color:var(--mut);text-transform:uppercase;
+letter-spacing:.6px;margin-bottom:3px}
+.plan span{font-size:15px;font-weight:700}
+label.cf{display:block;font-size:11px;color:var(--mut);margin:8px 0 3px}
+input{width:100%;background:#0a0a0d;border:1px solid var(--ln);color:var(--tx);
+border-radius:7px;padding:8px;font-size:14px}
+button{width:100%;padding:11px;border:0;border-radius:8px;background:var(--ok);
+color:#04240f;font-weight:700;font-size:14px;margin-top:10px}
+button:disabled{background:#2a2a33;color:var(--mut)}
+#spark{width:100%;height:60px;display:block}
+#log{font:11px/1.5 ui-monospace,monospace;color:var(--mut);max-height:130px;overflow:auto}
+</style></head><body>
+
+<h1>XAU SIGNAL DESK <span id="px">—</span></h1>
+
+<div class="card">
+<div class="verdict" id="verdict">LOADING</div>
+<svg id="spark" viewBox="0 0 300 60" preserveAspectRatio="none"></svg>
+</div>
+
+<div class="card" id="rows"></div>
+
+<div class="card" id="planCard" style="display:none">
+<div class="plan">
+<div><label>Entry</label><span id="pE">-</span></div>
+<div><label>Stop loss</label><span id="pS" class="no">-</span></div>
+<div><label>TP1 (50%)</label><span id="p1" class="wr">-</span></div>
+<div><label>TP2</label><span id="p2" class="ok">-</span></div>
+<div><label>Lots</label><span id="pL" >-</span></div>
+<div><label>Risk $</label><span id="pR">-</span></div>
+</div>
+</div>
+
+<div class="card">
+<label class="cf">Equity USD</label><input id="cfEq" type="number" value="10000">
+<label class="cf">Risk %</label><input id="cfRisk" type="number" step="0.05" value="0.75">
+<label class="cf">Min score</label><input id="cfMin" type="number" value="64">
+<label class="cf">Telegram bot token</label><input id="cfTok" placeholder="optional">
+<label class="cf">Telegram chat id</label><input id="cfChat" placeholder="optional">
+<button id="btn">START</button>
+</div>
+
+<div class="card"><div id="log"></div></div>
+
+<script>
+const $=i=>document.getElementById(i);
+const cfg={eq:10000,risk:0.75,min:64,tok:'',chat:''};
+let bars=[],dir=0,plan=null,lastSig=-99,running=false,timer=null,logs=[];
+
+try{Object.assign(cfg,JSON.parse(localStorage.getItem('xaucfg')||'{}'))}catch(e){}
+$('cfEq').value=cfg.eq;$('cfRisk').value=cfg.risk;$('cfMin').value=cfg.min;
+$('cfTok').value=cfg.tok;$('cfChat').value=cfg.chat;
+
+const log=m=>{logs.unshift(new Date().toLocaleTimeString()+' '+m);
+logs=logs.slice(0,40);$('log').textContent=logs.join('\n')};
+
+function save(){cfg.eq=+$('cfEq').value;cfg.risk=+$('cfRisk').value;
+cfg.min=+$('cfMin').value;cfg.tok=$('cfTok').value.trim();
+cfg.chat=$('cfChat').value.trim();localStorage.setItem('xaucfg',JSON.stringify(cfg))}
+
+// ---------- indicators ----------
+const ema=(a,p)=>{const k=2/(p+1);let o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o};
+const sma=(a,p)=>a.map((_,i)=>i<p-1?NaN:a.slice(i-p+1,i+1).reduce((x,y)=>x+y,0)/p);
+const rsi=(c,p)=>{let g=0,l=0,o=[];
+for(let i=1;i<c.length;i++){const d=c[i]-c[i-1];const up=d>0?d:0,dn=d<0?-d:0;
+if(i<=p){g+=up;l+=dn;if(i===p){g/=p;l/=p;o[p]=100-100/(1+g/(l||1e-9))}continue}
+g=(g*(p-1)+up)/p;l=(l*(p-1)+dn)/p;o[i]=100-100/(1+g/(l||1e-9))}return o};
+const atr=(h,l,c,p)=>{const tr=h.map((_,i)=>i?Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])):h[i]-l[i]);
+let o=[tr[0]];for(let i=1;i<tr.length;i++)o.push((o[i-1]*(p-1)+tr[i])/p);return o};
+function adx(h,l,c,p){const pdm=[0],ndm=[0];
+for(let i=1;i<h.length;i++){const up=h[i]-h[i-1],dn=l[i-1]-l[i];
+pdm.push(up>dn&&up>0?up:0);ndm.push(dn>up&&dn>0?dn:0)}
+const a=atr(h,l,c,p),sp=[0],sn=[0];
+for(let i=1;i<a.length;i++){sp.push((sp[i-1]*(p-1)+pdm[i])/p);sn.push((sn[i-1]*(p-1)+ndm[i])/p)}
+const dx=a.map((v,i)=>{const t=v||1e-9;const d=Math.abs(sp[i]-sn[i])/t*100;return d});
+let o=[dx[0]];for(let i=1;i<dx.length;i++)o.push((o[i-1]*(p-1)+dx[i])/p);return o}
+
+// ---------- data ----------
+async function pull(){
+  const t=Math.floor(Date.now()/1000);
+  try{
+    const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=15m&limit=260`);
+    if(!r.ok)throw 0;
+    const j=await r.json();
+    return j.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5]}));
+  }catch(e){
+    const r=await fetch(`https://www.okx.com/api/v5/market/candles?instId=PAXG-USDT&bar=15m&limit=260`);
+    const j=await r.json();
+    return j.data.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5]})).reverse();
+  }
+}
+
+function hourly(b){
+  const m=new Map();
+  for(const x of b){const k=Math.floor(x.t/3600000);m.set(k,x.c)}
+  return [...m.values()];
+}
+
+// ---------- core ----------
+function analyse(){
+  const n=bars.length;
+  const o=bars.map(x=>x.o),h=bars.map(x=>x.h),l=bars.map(x=>x.l),c=bars.map(x=>x.c),v=bars.map(x=>x.v);
+  const last=n-1;
+
+  const e21=ema(c,21),e55=ema(c,55);
+  const biasArr=ema(hourly(bars),200);
+  const bias=biasArr[biasArr.length-1];
+  const a14=atr(h,l,c,14),r14=rsi(c,14),ax=adx(h,l,c,14);
+  const base=sma(c,20);
+  const sd=base.map((b,i)=>{const s=c.slice(Math.max(0,i-19),i+1);
+    const m=s.reduce((x,y)=>x+y,0)/s.length;
+    return Math.sqrt(s.reduce((x,y)=>x+(y-m)**2,0)/s.length)});
+  const up=base.map((b,i)=>b+2*sd[i]),dn=base.map((b,i)=>b-2*sd[i]);
+  const vAvg=sma(v,20);
+
+  const A=a14[last],R=r14[last],X=ax[last],V=v[last],VA=vAvg[last];
+  const hh=Math.max(...h.slice(last-20,last)),ll=Math.min(...l.slice(last-20,last));
+
+  const bullEng=c[last-1]<o[last-1]&&c[last]>o[last]&&c[last]>=o[last-1]&&o[last]<=c[last-1];
+  const bearEng=c[last-1]>o[last-1]&&c[last]<o[last]&&o[last]>=c[last-1]&&c[last]<=o[last-1];
+  const bd=Math.abs(c[last]-o[last]),rg=h[last]-l[last];
+  const bullPin=rg>0&&(Math.min(o[last],c[last])-l[last])>=bd*2&&c[last]>o[last];
+  const bearPin=rg>0&&(h[last]-Math.max(o[last],c[last]))>=bd*2&&c[last]<o[last];
+  const brkU=c[last]>hh,brkD=c[last]<ll;
+
+  const volExp=VA>0&&V>=VA*1.6;
+  const cmeOkL=volExp,cmeOkS=volExp;
+
+  const hr=new Date().getUTCHours(),dw=new Date().getUTCDay(),dom=new Date().getUTCDate(),mo=new Date().getUTCMonth()+1;
+  const sessOk=!(hr<7||hr>=20);
+  const dayOk=dw!==0&&dw!==6&&!(dw===5&&hr>=19);
+  const atrOk=A>0.60&&A<12;
+  const rollWin=dom>=22&&[1,3,5,7,9,11].includes(mo);
+  const nfp=dw===5&&dom<=7;
+
+  let scL=(c[last]>bias?16:0)+(c[last]>e21[last]?5:0)+(e21[last]>e55[last]?5:0)
+    +(X>=20?10:0)+(X>=30?5:0)+(R>=48&&R<=72?14:0)
+    +(brkU?16:0)+(bullEng?10:0)+(bullPin?10:0)+((brkU||bullEng||bullPin)?6:0)
+    +(l[last]<=dn[last]?10:0)+(cmeOkL?12:0);
+  let scS=(c[last]<bias?16:0)+(c[last]<e21[last]?5:0)+(e21[last]<e55[last]?5:0)
+    +(X>=20?10:0)+(X>=30?5:0)+(R>=28&&R<=52?14:0)
+    +(brkD?16:0)+(bearEng?10:0)+(bearPin?10:0)+((brkD||bearEng||bearPin)?6:0)
+    +(h[last]>=up[last]?10:0)+(cmeOkS?12:0);
+
+  const gate=sessOk&&dayOk&&atrOk&&!rollWin&&!nfp;
+  return{last,A,R,X,V,VA,volExp,bias,c:c[last],up:up[last],dn:dn[last],e21:e21[last],e55:e55[last],
+    scL,scS,gate,sessOk,dayOk,atrOk,rollWin,nfp,brkU,brkD,bullEng,bearEng};
+}
+
+function render(S){
+  const px=S.c;
+  $('px').textContent='$'+px.toFixed(2);
+  const spark=$('spark');
+  const pts=bars.slice(-60).map(x=>x.c);
+  const mn=Math.min(...pts),mx=Math.max(...pts),sp=(mx-mn)||1;
+  spark.innerHTML=`<polyline fill="none" stroke="${pts[pts.length-1]>=pts[0]?'#22c55e':'#ef4444'}" stroke-width="1.5" points="${
+    pts.map((p,i)=>`${i/59*300},${60-(p-mn)/sp*56}`).join(' ')}"/>`;
+
+  const rows=[
+    ['Long score',S.scL,S.scL>=cfg.min?'ok':'mut'],
+    ['Short score',S.scS,S.scS>=cfg.min?'ok':'mut'],
+    ['HTF bias (H1)',px>S.bias?'BULL':'BEAR',px>S.bias?'ok':'no'],
+    ['ADX',S.X.toFixed(1),S.X>=20?'ok':'no'],
+    ['RSI',S.R.toFixed(1),'mut'],
+    ['ATR $',S.A.toFixed(2),S.atrOk?'ok':'no'],
+    ['Volume vs avg',S.VA>0?(S.V/S.VA).toFixed(2)+'x':'n/a',S.volExp?'ok':'mut'],
+    ['Breakout',S.brkU?'UP':S.brkD?'DOWN':'none','mut'],
+    ['Patterns',[S.bullEng?'bullEng':null,S.bearEng?'bearEng':null].filter(Boolean).join(' ')||'none','mut'],
+    ['Session',S.sessOk?'OPEN':'CLOSED',S.sessOk?'ok':'no'],
+    ['Day',S.dayOk?'OK':'WEEKEND',S.dayOk?'ok':'no'],
+    ['Roll window',S.rollWin?'YES':'NO',S.rollWin?'wr':'mut'],
+    ['NFP window',S.nfp?'YES':'NO',S.nfp?'wr':'mut'],
+  ];
+  $('rows').innerHTML=rows.map(r=>`<div class="row"><span>${r[0]}</span><b class="v ${r[2]}">${r[1]}</b></div>`).join('');
+}
+
+function fire(S){
+  const riskUsd=cfg.eq*cfg.risk/100;
+  const slD=S.A*1.2;
+  const lots=Math.max(0.01,Math.round(riskUsd/(slD*100)*100)/100);
+  plan={dir,entry:S.c,sl:dir>0?S.c-slD:S.c+slD,
+    tp1:dir>0?S.c+S.A:S.c-S.A,tp2:dir>0?S.c+S.A*1.9:S.c-S.A*1.9,lots,riskUsd};
+  $('planCard').style.display='block';
+  $('pE').textContent=plan.entry.toFixed(2);
+  $('pS').textContent=plan.sl.toFixed(2);
+  $('p1').textContent=plan.tp1.toFixed(2);
+  $('p2').textContent=plan.tp2.toFixed(2);
+  $('pL').textContent=plan.lots;
+  $('pR').textContent='$'+riskUsd.toFixed(2);
+  log((dir>0?'LONG':'SHORT')+' signal @ '+plan.entry.toFixed(2));
+  if(cfg.tok&&cfg.chat){
+    const txt=`${dir>0?'LONG':'SHORT'} XAUUSD\nEntry ${plan.entry.toFixed(2)}\nSL ${plan.sl.toFixed(2)}\nTP1 ${plan.tp1.toFixed(2)}\nTP2 ${plan.tp2.toFixed(2)}\nLots ${plan.lots}`;
+    fetch(`https://api.telegram.org/bot${cfg.tok}/sendMessage?chat_id=${cfg.chat}&text=${encodeURIComponent(txt)}`).catch(()=>{});
+  }
+}
+
+async function tick(){
+  if(!running)return;
+  try{
+    bars=await pull();
+    if(bars.length<210){log('not enough bars');return}
+    const S=analyse();
+    render(S);
+
+    if(plan){
+      if(plan.dir>0&&(S.c<=plan.sl||S.c>=plan.tp2))plan=null;
+      if(plan.dir<0&&(S.c>=plan.sl||S.c<=plan.tp2))plan=null;
+      if(!plan)$('planCard').style.display='none';
+    }
+
+    const cd=bars.length-S.last;
+    if(!plan&&S.gate&&S.scL>=cfg.min&&S.scL>S.scS&&cd>4){dir=1;fire(S)}
+    else if(!plan&&S.gate&&S.scS>=cfg.min&&S.scS>S.scL&&cd>4){dir=-1;fire(S)}
+
+    const v=plan?(plan.dir>0?'LONG ACTIVE':'SHORT ACTIVE'):(S.gate?'WAITING':'BLOCKED');
+    const el=$('verdict');
+    el.textContent=v;
+    el.className='verdict '+(plan?'ok':S.gate?'wr':'no');
+  }catch(e){log('fetch error: '+e.message)}
+}
+
+$('btn').onclick=()=>{
+  if(running){running=false;clearInterval(timer);$('btn').textContent='START';$('verdict').textContent='STOPPED';return}
+  save();running=true;$('btn').textContent='STOP';tick();timer=setInterval(tick,20000);
+};
+</script></body></html>
